@@ -371,108 +371,86 @@ class StockTradingGame:
             self.metrics_labels[key] = value_label
     
     def _show_stock_selection(self):
-        """Show stock selection dialog (Complete Version)"""
+        """Show stock selection dialog (Updated with Board Filters)"""
         dialog = tk.Toplevel(self.root)
         dialog.title("游戏设置")
-        dialog.geometry("480x750") # 稍微调大一点
+        dialog.geometry("720x1000") # 高度再增加一点以容纳新选项
         dialog.transient(self.root)
         dialog.grab_set()
         
         ttk.Label(dialog, text="股票交易模拟", font=('Microsoft YaHei', 16, 'bold')).pack(pady=15)
         
-        # --- 0. 读档按钮 ---
+        # 0. 读档按钮 (保持不变)
         load_frame = ttk.Frame(dialog)
         load_frame.pack(fill=tk.X, padx=20, pady=5)
         ttk.Button(load_frame, text="📂 读取旧存档", command=lambda: [self._load_game() and dialog.destroy()], bootstyle="secondary-outline").pack(fill=tk.X)
 
-        # --- 1. 游戏模式 ---
+        # 1. 游戏模式 (保持不变)
         mode_frame = ttk.LabelFrame(dialog, text="1. 游戏模式", padding=15)
         mode_frame.pack(fill=tk.X, padx=20, pady=10)
         
         self.mode_var = tk.StringVar(value="history")
-        
-        # 日期显示标签 (先创建，后面要用)
         self.start_date_display = ttk.Label(dialog, text=f"当前起始日期: {self.current_date}", foreground="blue", font=('Arial', 10, 'bold'))
         
         def on_mode_change():
             mode = self.mode_var.get()
             if mode == "simulation":
-                # 模拟模式：禁用日期按钮，日期自动生成
                 self.data_loader.set_mode("simulation")
                 self.available_dates = self.data_loader.get_available_dates()
                 self.current_date = self.available_dates[0]
                 self.start_date_display.config(text="模拟模式: 日期将自动生成 (Sim-Day-001)")
-                
-                # 禁用日期按钮
-                for child in date_btn_frame.winfo_children():
-                    child.configure(state="disabled")
+                for child in date_btn_frame.winfo_children(): child.configure(state="disabled")
             else:
-                # 历史模式：启用日期按钮
                 self.data_loader.set_mode("history")
                 self.available_dates = self.data_loader.get_available_dates()
-                # 恢复到当前选定的历史日期
                 self.current_date = self.available_dates[self.current_date_idx]
                 self.start_date_display.config(text=f"当前起始日期: {self.current_date}")
-                
-                # 启用日期按钮
-                for child in date_btn_frame.winfo_children():
-                    child.configure(state="normal")
+                for child in date_btn_frame.winfo_children(): child.configure(state="normal")
 
         ttk.Radiobutton(mode_frame, text="历史回测 (真实历史数据)", variable=self.mode_var, value="history", command=on_mode_change).pack(anchor="w", pady=2)
-        ttk.Radiobutton(mode_frame, text="模拟挑战 (混沌世界生成)", variable=self.mode_var, value="simulation", command=on_mode_change).pack(anchor="w", pady=2)
+        ttk.Radiobutton(mode_frame, text="模拟挑战 (模拟世界生成)", variable=self.mode_var, value="simulation", command=on_mode_change).pack(anchor="w", pady=2)
 
-        # --- 2. 设定时间 (仅历史模式) ---
+        # 2. 设定时间 (保持不变)
         date_frame = ttk.LabelFrame(dialog, text="2. 设定时间 (仅历史模式)", padding=15)
         date_frame.pack(fill=tk.X, padx=20, pady=10)
         
-        # 把日期显示放进这个 Frame 里
-        self.start_date_display.pack_forget() # 先移除之前的 pack
+        self.start_date_display.pack_forget()
         self.start_date_display = ttk.Label(date_frame, text=f"当前: {self.current_date}", foreground="#007bff", font=('Arial', 10, 'bold'))
         self.start_date_display.pack(pady=(0, 10))
         
-        # 按钮容器
         date_btn_frame = ttk.Frame(date_frame)
         date_btn_frame.pack(fill=tk.X)
-        
-        ttk.Button(
-            date_btn_frame, 
-            text="🎲 随机历史日期", 
-            command=self._set_random_start_date,
-            bootstyle="info-outline"
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        
-        ttk.Button(
-            date_btn_frame, 
-            text="📅 指定日期", 
-            command=self._set_custom_start_date,
-            bootstyle="info-outline"
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        ttk.Button(date_btn_frame, text="🎲 随机历史日期", command=self._set_random_start_date, bootstyle="info-outline").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        ttk.Button(date_btn_frame, text="📅 指定日期", command=self._set_custom_start_date, bootstyle="info-outline").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
-        # --- 3. 选择股票 ---
-        stock_frame = ttk.LabelFrame(dialog, text="3. 开始游戏", padding=15)
+        # --- 3. 筛选条件 (新增部分) ---
+        filter_frame = ttk.LabelFrame(dialog, text="3. 板块筛选", padding=15)
+        filter_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # 定义状态变量
+        self.filter_main = tk.BooleanVar(value=True)   # 主板
+        self.filter_300 = tk.BooleanVar(value=False)    # 创业板
+        self.filter_688 = tk.BooleanVar(value=False)   # 科创板 (默认不选，新手友好)
+        
+        # 放置复选框 (一行放三个)
+        cb_frame = ttk.Frame(filter_frame)
+        cb_frame.pack(fill=tk.X)
+        
+        ttk.Checkbutton(cb_frame, text="主板 (60/00)", variable=self.filter_main, bootstyle="round-toggle").pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(cb_frame, text="创业板 (300)", variable=self.filter_300, bootstyle="round-toggle").pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(cb_frame, text="科创板 (688)", variable=self.filter_688, bootstyle="round-toggle").pack(side=tk.LEFT, padx=10)
+        # ---------------------------
+
+        # 4. 开始游戏 (标题改为步骤4)
+        stock_frame = ttk.LabelFrame(dialog, text="4. 开始游戏", padding=15)
         stock_frame.pack(fill=tk.X, padx=20, pady=10)
         
-        ttk.Button(
-            stock_frame,
-            text="指定单只股票",
-            command=lambda: self._select_single_stock(dialog),
-            width=20
-        ).pack(pady=5)
+        ttk.Button(stock_frame, text="指定单只股票", command=lambda: self._select_single_stock(dialog), width=20).pack(pady=5)
         
-        ttk.Button(
-            stock_frame,
-            text="随机 10 只股票",
-            command=lambda: self._select_random_stocks(dialog),
-            width=20,
-            bootstyle="primary"
-        ).pack(pady=5)
+        # 随机选股按钮 (会用到上面的筛选条件)
+        ttk.Button(stock_frame, text="随机 10 只股票", command=lambda: self._select_random_stocks(dialog), width=20, bootstyle="primary").pack(pady=5)
         
-        ttk.Button(
-            stock_frame,
-            text="市场全部股票",
-            command=lambda: self._select_all_stocks(dialog),
-            width=20
-        ).pack(pady=5)
+        ttk.Button(stock_frame, text="市场全部股票", command=lambda: self._select_all_stocks(dialog), width=20).pack(pady=5)
 
     def _set_random_start_date(self):
         """Set a random start date"""
@@ -544,63 +522,60 @@ class StockTradingGame:
             dialog.destroy()
     
     def _select_random_stocks(self, dialog):
-        """Select random 10 stocks (Fixed)"""
-        # 1. 同步日期列表 (防止模式切换后未同步)
+        """Select random 10 stocks with Board Filtering"""
+        # 1. 收集筛选前缀
+        prefixes = []
+        if self.filter_main.get():
+            prefixes.extend(['00', '60']) # 主板
+        if self.filter_300.get():
+            prefixes.append('300')        # 创业板
+        if self.filter_688.get():
+            prefixes.append('688')        # 科创板
+            
+        # 2. 校验是否至少选了一个
+        if not prefixes:
+            messagebox.showwarning("提示", "请至少选择一个板块！")
+            return
+
+        # 3. 同步日期 (原有逻辑)
         self.available_dates = self.data_loader.get_available_dates()
-        
         target_date_for_selection = self.current_date
         
-        # 2. 判断模式
         if self.data_loader.sim_mode:
-            # --- 模拟模式 ---
-            # 重置时间轴到第0天
             self.start_date_idx = 0
             self.current_date_idx = 0
             self.current_date = self.available_dates[0]
-            
-            # 刷新UI显示
             self.date_label.config(text=self.current_date)
             self._update_market_bar()
-            
-            # 使用一个固定的现代日期来获取股票池 (保证代码有效)
             target_date_for_selection = "2023-06-01" 
-            
         else:
-            # --- 历史模式 ---
-            # 必须使用用户当前选择的日期，否则可能选到未上市的股票
             target_date_for_selection = self.current_date
-            
-            # 如果当前日期是默认的第0天(通常是2012年)，且用户没点随机日期
-            # 为了体验更好，我们可以强制随机一个稍微靠后的日期，或者保持原样
-            # 这里保持原样，但确保 get_random_stocks 使用该日期筛选
-            pass
 
-        # 3. 核心：使用 target_date_for_selection 去数据库查代码
-        # 这样能保证查出的代码在该日期是“在市”的
-        stocks = self.data_loader.get_random_stocks(target_date_for_selection, 10)
+        # 4. 传参给 data_loader (新增 prefixes 参数)
+        stocks = self.data_loader.get_random_stocks(target_date_for_selection, 10, prefixes=prefixes)
         
         if not stocks:
-            messagebox.showwarning("提示", f"日期 {target_date_for_selection} 当天没有可交易的股票数据\n请尝试更换日期。")
+            board_names = []
+            if self.filter_main.get(): board_names.append("主板")
+            if self.filter_300.get(): board_names.append("创业板")
+            if self.filter_688.get(): board_names.append("科创板")
+            name_str = "+".join(board_names)
+            
+            messagebox.showwarning("提示", f"在日期 {target_date_for_selection}\n[{name_str}] 没有找到可交易的股票。\n\n可能原因：\n1. 当年该板块还未开市（如科创板2019年才开）。\n2. 数据缺失。")
             return
 
         self.watched_stocks = stocks
         
-        # 4. 刷新所有界面
+        # 5. 刷新界面 (原有逻辑)
         self._refresh_stock_list()
-        
-        # 如果有股票，默认选中第一只
         if self.watched_stocks:
             self.current_stock = self.watched_stocks[0]
-            # 选中 Treeview 第一行
             items = self.stock_tree.get_children()
-            if items:
-                self.stock_tree.selection_set(items[0])
+            if items: self.stock_tree.selection_set(items[0])
         
         self._update_chart()
         self._update_account_display()
         self._update_trade_estimate()
-        
-        # 关闭弹窗
         dialog.destroy()
 
     def _select_all_stocks(self, dialog):

@@ -290,20 +290,44 @@ class DataLoader:
         self.sim_data_cache[code] = sim_df
         print(f"已生成模拟数据: {code}, 长度 {len(sim_df)}")
     
-    def get_random_stocks(self, date: str, n: int = 10) -> List[str]:
-        """Get n random stock codes (excluding indexes)"""
-        # 修改 SQL：排除 sh. 和 sz. 开头的代码
-        query = """
-            SELECT code 
-            FROM stock_data 
-            WHERE strftime(date, '%Y-%m-%d') = ? 
-              AND code NOT LIKE 'sh.%' 
-              AND code NOT LIKE 'sz.%'
-            ORDER BY RANDOM() 
-            LIMIT ?
+    def get_random_stocks(self, date: str = None, n: int = 10, prefixes: List[str] = None) -> List[str]:
         """
-        df = self.con.execute(query, [date, n]).df()
-        return df['code'].tolist()
+        Get random n stocks alive on date, optionally filtered by prefixes.
+        prefixes example: ['00', '60', '300']
+        """
+        # 如果 date 为 None 或者是模拟日期，就随机选一天真实日期来查代码
+        if date is None or "Sim" in date:
+            date = "2023-06-01" # 使用较新的日期以确保包含科创板等
+
+        # 基础 SQL
+        sql = "SELECT DISTINCT code FROM stock_data WHERE strftime(date, '%Y-%m-%d') = ?"
+        params = [date]
+
+        # --- 新增：构建前缀筛选条件 ---
+        if prefixes:
+            # 构造类似: AND (code LIKE '00%' OR code LIKE '60%' OR ...)
+            # DuckDB 支持 LIKE 'prefix%' 语法
+            conditions = [f"code LIKE '{p}%'" for p in prefixes]
+            if conditions:
+                sql += " AND (" + " OR ".join(conditions) + ")"
+        # ---------------------------
+
+        # 执行查询拿到所有符合条件的代码
+        try:
+            all_codes_df = self.con.execute(sql, params).df()
+            all_codes = all_codes_df['code'].tolist()
+        except Exception as e:
+            print(f"Error getting stock list: {e}")
+            return []
+        
+        # 随机抽取 n 个
+        if not all_codes:
+            return []
+            
+        if len(all_codes) <= n:
+            return all_codes
+            
+        return random.sample(all_codes, n)
     
     def close(self):
         """Close connection"""
