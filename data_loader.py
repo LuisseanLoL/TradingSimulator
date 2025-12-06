@@ -11,6 +11,7 @@ import config
 import random
 # 引入我们刚才写的计算引擎
 import tech_calc 
+import time # 用于生成种子
 
 class DataLoader:
     """
@@ -51,6 +52,7 @@ class DataLoader:
         self.sim_data_cache = {}
         self.playable_sim_dates = [] # 仅包含 Sim-Day-xxxx
         self.full_sim_dates = []     # 包含 Warmup-xxxx 和 Sim-Day-xxxx
+        self.sim_seed = None # [新增] 存储当前模拟游戏的种子
 
     def _load_stock_names(self):
         """Load stock names from csv"""
@@ -232,11 +234,21 @@ class DataLoader:
             return df.iloc[0].to_dict()
     
     # --- 新增：切换模式 ---
-    def set_mode(self, mode: str):
-        """mode: 'history' or 'simulation'"""
+    def set_mode(self, mode: str, seed: int = None):
+        """
+        mode: 'history' or 'simulation'
+        seed: an integer to control randomness for simulation mode
+        """
         if mode == 'simulation':
             self.sim_mode = True
-            # [关键修改] 创建两个日期列表
+            
+            # 如果提供了种子(读档)，就用它；否则(新游戏)，就生成一个
+            if seed is not None:
+                self.sim_seed = seed
+            else:
+                self.sim_seed = int(time.time()) # 使用当前时间戳作为新种子
+            print(f"模拟模式已启动，随机种子为: {self.sim_seed}")
+            
             warmup_dates = [f"Warmup-{i:04d}" for i in range(1, config.SIM_WARMUP_DAYS + 1)]
             self.playable_sim_dates = [f"Sim-Day-{i:04d}" for i in range(1, 1001)] 
             self.full_sim_dates = warmup_dates + self.playable_sim_dates
@@ -246,6 +258,7 @@ class DataLoader:
             self.sim_data_cache = {}
             self.full_sim_dates = []
             self.playable_sim_dates = []
+            self.sim_seed = None
 
     def ensure_sim_data_generated(self, codes: List[str]):
         """
@@ -267,6 +280,11 @@ class DataLoader:
         3. 平滑价格断层
         4. 对完整数据（预热+正式）重算指标
         """
+        # --- [关键新增] ---
+        # 在生成任何随机数据之前，设置种子！
+        # 这保证了只要 self.sim_seed 不变，后续所有 random 调用都将是确定的
+        random.seed(self.sim_seed)
+        # ------------------
         # 1. 获取所有历史源数据
         query = "SELECT * FROM stock_data WHERE code = ? ORDER BY date ASC"
         src_df = self.con.execute(query, [code]).df()

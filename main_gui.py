@@ -1011,12 +1011,16 @@ class StockTradingGame:
     def _save_game(self):
         if not self.available_dates: return
         game_state = {
-            'version': '2.0',
+            'version': '2.1', # 版本号更新
             'current_date': self.current_date,
             'watched_stocks': self.watched_stocks,
             'pinned_stocks': self.pinned_stocks,
             'current_stock': self.current_stock,
-            'account': self.account.to_dict()
+            'account': self.account.to_dict(),
+            # --- [关键新增] ---
+            'game_mode': 'simulation' if self.data_loader.sim_mode else 'history',
+            'sim_seed': self.data_loader.sim_seed if self.data_loader.sim_mode else None
+            # ------------------
         }
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
         if file_path:
@@ -1028,37 +1032,85 @@ class StockTradingGame:
                 messagebox.showerror("错误", str(e))
 
     def _load_game(self) -> bool:
+        """Load game state from a JSON file."""
         file_path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if not file_path: return False
+            
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             
+            # --- [关键修改] ---
+            # 1. 恢复游戏模式和种子
+            game_mode = state.get('game_mode', 'history') # 兼容旧存档，默认为历史模式
+            sim_seed = state.get('sim_seed')
+
+            # 2. 初始化 DataLoader
+            self.data_loader.set_mode(game_mode, seed=sim_seed)
+            # ------------------
+
+            # 3. 恢复日期
+            # 必须在 set_mode 之后，因为 set_mode 会改变 available_dates
+            self.available_dates = self.data_loader.get_available_dates() 
             loaded_date = state.get('current_date')
+            
             if loaded_date not in self.available_dates:
-                 if loaded_date < self.available_dates[0] or loaded_date > self.available_dates[-1]:
-                     messagebox.showerror("错误", "存档日期超出数据范围")
-                     return False
+                messagebox.showerror("错误", f"存档日期 {loaded_date} 在当前数据中不存在！")
+                return False
 
             self.current_date = loaded_date
             self.current_date_idx = self.available_dates.index(self.current_date)
+            
+            # 4. 恢复其他状态
             self.watched_stocks = state.get('watched_stocks', [])
             self.pinned_stocks = state.get('pinned_stocks', [])
             self.current_stock = state.get('current_stock')
             self.account = Account.from_dict(state['account'])
             
+            # 5. [关键] 按需生成数据
+            # 必须在恢复 watched_stocks 之后
+            if game_mode == 'simulation':
+                print("正在根据存档恢复模拟数据...")
+                if hasattr(self.data_loader, 'ensure_sim_data_generated'):
+                    self.data_loader.ensure_sim_data_generated(self.watched_stocks)
+                # 也要为大盘指数生成
+                self.data_loader.ensure_sim_data_generated([self.market_index_code])
+                print("模拟数据恢复完毕。")
+            
+            # 6. 刷新界面
             self.date_label.config(text=self.current_date)
+            self._refresh_stock_list() # 必须先刷新列表
             self._update_market_bar()
-            self._update_chart()
-            self._update_metrics()
             self._update_account_display()
-            self._refresh_stock_list()
-            messagebox.showinfo("成功", "存档读取成功")
+            
+            # 延迟刷新图表，确保UI稳定
+            self.root.after(10, self._force_refresh_main_view_after_load)
+
+            messagebox.showinfo("成功", "存档读取成功！")
             return True
+            
         except Exception as e:
-            messagebox.showerror("错误", str(e))
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("错误", f"读取存档失败:\n{str(e)}")
             return False
     
+    def _force_refresh_main_view_after_load(self):
+        """
+        A dedicated helper for loading to ensure the chart is drawn correctly.
+        """
+        # 选中当前股票
+        if self.current_stock and self.current_stock in self.watched_stocks:
+            all_items = self.stock_tree.get_children()
+            if self.current_stock in all_items:
+                self.stock_tree.selection_set(self.current_stock)
+                self.stock_tree.focus(self.current_stock)
+        
+        # 刷新图表和相关面板
+        self._update_chart()
+        self._update_metrics()
+        self._update_trade_estimate()
+
     def _update_trade_estimate(self, *args):
         if not self.current_stock:
             self.trade_price_label.config(text="请选股")
