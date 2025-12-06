@@ -46,6 +46,7 @@ test/
 *.log
 *.sqlite
 *.db
+*.spec
 
 # 环境变量
 .env

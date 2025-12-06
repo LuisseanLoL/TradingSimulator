@@ -2,9 +2,16 @@
 Configuration settings for Stock Trading Game
 """
 import os
+import sys  # 引入 sys
 
-# Directory paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# --- 修改开始：智能识别运行路径 ---
+if getattr(sys, 'frozen', False):
+    # 如果是打包后的 EXE，基准目录是 EXE 所在的文件夹
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    # 如果是 Python 源码运行，基准目录是当前文件所在文件夹
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# --- 修改结束 ---
 # 以前是 daily_full_factor_cache，现在改为指向存放 merged parquet 的目录
 DATA_DIR = os.path.join(BASE_DIR, "quant_database")
 DATA_FILENAME = "merged_all_stock_data.parquet"
@@ -32,7 +39,7 @@ DEFAULT_INDICATORS = {
 }
 
 # GUI settings
-WINDOW_TITLE = "股票交易模拟器 (Pro Ver.)"
+WINDOW_TITLE = "股票交易模拟器 (Pro Ver.) - By Seanuyuil"
 WINDOW_SIZE = "1400x900"
 
 # --- 配色方案 (仿东方财富/TradingView风格) ---

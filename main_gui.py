@@ -869,7 +869,32 @@ class StockTradingGame:
         PerformanceWindow(self.root, self.account)
     
     def _show_about(self):
-        messagebox.showinfo("关于", "股票交易模拟器 v2.0 (Pro)\n包含历史回测与蒙特卡洛模拟挑战\n数据范围: 2012-2025")
+        """Show about dialog"""
+        
+        # --- 修改这里 ---
+        # 定义你的信息
+        app_name = "股票交易模拟器 (Pro Ver.)"
+        version = "1.1.0"
+        author = "Seanuyuil"
+        contact = "liusean1999@gmail.com"
+        github_link = "https://github.com/LuisseanLoL/TradingSimulator"
+
+        # 组合成最终的显示文本
+        about_text = (
+            f"{app_name} v{version}\n\n"
+            "一款股票模拟交易游戏。\n\n"
+            "------------------------------------\n"
+            f"作者: {author}\n"
+            f"联系方式: {contact}\n"
+            f"项目地址: {github_link}\n"
+            "------------------------------------\n\n"
+            "祝您交易愉快！"
+        )
+        
+        messagebox.showinfo(
+            "关于本软件",
+            about_text
+        )
     
     def _save_game(self):
         if not self.available_dates: return
