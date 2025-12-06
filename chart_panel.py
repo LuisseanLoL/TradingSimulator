@@ -251,16 +251,41 @@ class ChartPanel:
         """Plot candlestick with trade markers"""
         x_range = range(len(data))
         
-        # 绘制网格线 (优化：更淡的颜色)
+        # 绘制网格线
         ax.grid(True, linestyle='--', alpha=0.4, color='#d9d9d9')
         
         for idx, (_, row) in enumerate(data.iterrows()):
-            color = config.COLOR_RISE if row['close'] >= row['open'] else config.COLOR_FALL
+            # --- 修改开始：更精准的颜色判断逻辑 ---
+            open_p = row['open']
+            close_p = row['close']
+            
+            if close_p > open_p:
+                # 收盘 > 开盘：绝对涨 (红)
+                color = config.COLOR_RISE
+            elif close_p < open_p:
+                # 收盘 < 开盘：绝对跌 (绿)
+                color = config.COLOR_FALL
+            else:
+                # 收盘 == 开盘 (十字星或一字板)
+                # 这时需要看涨跌幅：如果相对昨天是跌的，给绿色；否则给红色
+                pct = 0.0
+                if 'pctChg' in row: pct = row['pctChg']
+                elif 'pct_chg' in row: pct = row['pct_chg']
+                
+                if pct < 0:
+                    color = config.COLOR_FALL
+                else:
+                    color = config.COLOR_RISE
+            # --- 修改结束 ---
+            
             ax.plot([idx, idx], [row['low'], row['high']], color=color, linewidth=0.5)
             
-            body_height = abs(row['close'] - row['open'])
-            body_bottom = min(row['open'], row['close'])
-            if body_height == 0: body_height = 0.01
+            body_height = abs(close_p - open_p)
+            body_bottom = min(open_p, close_p)
+            
+            # 视觉优化：如果高度为0（一字板），设一个极小值确保能看到一条横线
+            if body_height == 0: 
+                body_height = 0.005 # 稍微调细一点，看起来更精致
             
             rect = plt.Rectangle(
                 (idx - config.CANDLESTICK_WIDTH/2, body_bottom),
