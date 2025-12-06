@@ -40,6 +40,7 @@ Thumbs.db
 # 项目特定目录（根据你的结构）
 saves/
 quant_database/
+test/
 
 # 日志与数据
 *.log
