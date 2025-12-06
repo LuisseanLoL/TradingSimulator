@@ -73,7 +73,7 @@ class ChartPanel:
         chart_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         # 设置 DPI=100 适配高分屏
-        self.figure = Figure(figsize=(10, 6), dpi=100) 
+        self.figure = Figure(figsize=(10, 6), dpi=100, facecolor='#fbfbfb') 
         self.canvas = FigureCanvasTkAgg(self.figure, chart_container)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
@@ -171,6 +171,27 @@ class ChartPanel:
                 return str(date_val).split(' ')[0]
         return ''
     
+    def _style_axis(self, ax):
+        """应用专业图表样式"""
+        # 1. 设置背景 (透明或淡灰)
+        ax.set_facecolor('white') 
+        
+        # 2. 网格线：极淡、虚线、置于底层
+        ax.grid(True, linestyle='--', linewidth=0.6, color='#e0e0e0', alpha=0.6)
+        ax.set_axisbelow(True) # 让网格线在K线后面
+
+        # 3. 去掉顶部和右侧的边框 (Spines)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        # 4. 左侧和底部边框颜色淡化
+        ax.spines['left'].set_color('#cccccc')
+        ax.spines['bottom'].set_color('#cccccc')
+        
+        # 5. 刻度文字颜色
+        ax.tick_params(axis='x', colors='#666666', labelsize=8)
+        ax.tick_params(axis='y', colors='#666666', labelsize=8)
+    
     def update_chart(self, data: pd.DataFrame, trades: list = None):
         """Update chart with new data"""
         self.current_data = data
@@ -251,11 +272,10 @@ class ChartPanel:
         """Plot candlestick with trade markers"""
         x_range = range(len(data))
         
-        # 绘制网格线
-        ax.grid(True, linestyle='--', alpha=0.4, color='#d9d9d9')
-        
         for idx, (_, row) in enumerate(data.iterrows()):
-            # --- 修改开始：更精准的颜色判断逻辑 ---
+            color = config.COLOR_RISE if row['close'] >= row['open'] else config.COLOR_FALL
+            # 线宽从 0.5 改为 0.8，颜色稍微透明一点点增加质感
+            ax.plot([idx, idx], [row['low'], row['high']], color=color, linewidth=0.8, alpha=0.9)
             open_p = row['open']
             close_p = row['close']
             
@@ -327,8 +347,11 @@ class ChartPanel:
                                     arrowprops=dict(facecolor=config.COLOR_FALL, shrink=0.05, alpha=0.8, width=2, headwidth=6),
                                     ha='center', va='bottom', fontsize=8, color=config.COLOR_FALL, fontweight='bold')
         
-        ax.set_ylabel('价格')
-        ax.legend(loc='upper left', fontsize=7)
+        self._style_axis(ax)
+        ax.set_ylabel('价格', color='#666666')
+        
+        # 优化 Legend (去掉边框，透明背景)
+        ax.legend(loc='upper left', fontsize=8, frameon=False, labelcolor='#666666')
 
     def _plot_volume(self, ax, data: pd.DataFrame):
         if 'vol' in data.columns: vol_col = 'vol'
@@ -337,9 +360,10 @@ class ChartPanel:
         
         x = range(len(data))
         colors = [config.COLOR_RISE if r['close'] >= r['open'] else config.COLOR_FALL for _, r in data.iterrows()]
-        ax.bar(x, data[vol_col], color=colors, width=config.CANDLESTICK_WIDTH)
-        ax.set_ylabel('成交量')
-        ax.grid(True, linestyle='--', alpha=0.4, color='#d9d9d9')
+        ax.bar(x, data[vol_col], color=colors, width=config.CANDLESTICK_WIDTH, alpha=0.6)
+        
+        self._style_axis(ax)
+        ax.set_ylabel('成交量', color='#666666')
 
     def _plot_macd(self, ax, data):
         if 'dif' not in data.columns: return

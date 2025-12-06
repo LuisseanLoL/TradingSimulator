@@ -34,13 +34,18 @@ DEFAULT_INDICATORS = {
 # GUI settings
 WINDOW_TITLE = "股票交易模拟器 (Pro Ver.)"
 WINDOW_SIZE = "1400x900"
-THEME = "cosmo"  # ttkbootstrap theme
 
-# Color scheme
-COLOR_RISE = "#FF4136"  # Red for price increase
-COLOR_FALL = "#2ECC40"  # Green for price decrease
+# --- 配色方案 (仿东方财富/TradingView风格) ---
+# 涨 (红): 使用稍带粉调的红，不那么刺眼
+COLOR_RISE = '#F6465D'  
+# 跌 (绿): 使用青绿色，比纯绿更现代
+COLOR_FALL = '#0ECB81'  
+# 窗口主题 (推荐)
+# 亮色推荐: 'litera', 'cosmo', 'flatly'
+# 暗色推荐: 'darkly', 'cyborg'
+THEME = 'litera'
 COLOR_BACKGROUND = "#FFFFFF"
-COLOR_GRID = "#E0E0E0"
+COLOR_GRID = "#f0f0f0"
 
 # Stock list display
 MAX_STOCK_LIST_DISPLAY = 50
