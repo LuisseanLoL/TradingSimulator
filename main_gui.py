@@ -496,19 +496,26 @@ class StockTradingGame:
             messagebox.showwarning("警告", "无效的日期")
     
     def _select_single_stock(self, dialog):
-        """Select single stock"""
+        """Select single stock with pre-generation"""
         code = simpledialog.askstring("输入股票代码", "请输入6位股票代码:", parent=dialog)
         if code:
-            # 模拟模式下的日期重置
+            self.watched_stocks = [code]
+
             if self.data_loader.sim_mode:
+                # [优化] 在刷新UI前，先强制生成数据
+                print("正在为您生成模拟数据，请稍候...")
+                self.data_loader.ensure_sim_data_generated(self.watched_stocks)
+                print("数据生成完毕！")
+                
                 self.available_dates = self.data_loader.get_available_dates()
-                self.start_date_idx = 0
-                self.current_date_idx = 0
-                self.current_date = self.available_dates[0]
+                self.start_date_idx = config.SIM_WARMUP_DAYS
+                self.current_date_idx = self.start_date_idx
+                self.current_date = self.available_dates[self.current_date_idx]
+                
                 self.date_label.config(text=self.current_date)
                 self._update_market_bar()
-
-            self.watched_stocks = [code]
+            
+            # 数据已就绪，现在刷新UI
             self._refresh_stock_list()
             self._update_chart()
             self._update_account_display()
@@ -516,13 +523,12 @@ class StockTradingGame:
             dialog.destroy()
     
     def _select_random_stocks(self, dialog):
-        """Select random stocks with Board Filtering"""
-        # 1. 收集筛选
+        """Select random 10 stocks with deferred UI update"""
+        # 1. 收集筛选前缀
         prefixes = []
         if self.filter_main.get(): prefixes.extend(['00', '60'])
         if self.filter_300.get(): prefixes.append('300')
         if self.filter_688.get(): prefixes.append('688')
-            
         if not prefixes:
             messagebox.showwarning("提示", "请至少选择一个板块！")
             return
@@ -532,33 +538,61 @@ class StockTradingGame:
         target_date_for_selection = self.current_date
         
         if self.data_loader.sim_mode:
-            self.start_date_idx = 0
-            self.current_date_idx = 0
-            self.current_date = self.available_dates[0]
-            self.date_label.config(text=self.current_date)
-            self._update_market_bar()
-            target_date_for_selection = "2023-06-01" 
+            self.start_date_idx = config.SIM_WARMUP_DAYS
+            self.current_date_idx = self.start_date_idx
+            self.current_date = self.available_dates[self.current_date_idx]
+            target_date_for_selection = "2023-06-01"
         
         # 3. 选股
         stocks = self.data_loader.get_random_stocks(target_date_for_selection, 10, prefixes=prefixes)
-        
         if not stocks:
             messagebox.showwarning("提示", f"在日期 {target_date_for_selection} 未找到符合板块要求的股票。")
             return
-
         self.watched_stocks = stocks
         
-        # 4. 刷新
+        # 4. 如果是模拟模式，预先生成数据
+        if self.data_loader.sim_mode:
+            print("正在为您生成模拟数据，请稍候...")
+            if hasattr(self.data_loader, 'ensure_sim_data_generated'):
+                 self.data_loader.ensure_sim_data_generated(self.watched_stocks)
+            print("数据生成完毕！")
+            self.date_label.config(text=self.current_date)
+            self._update_market_bar()
+            
+        # 5. 刷新左侧列表
         self._refresh_stock_list()
+        
+        # 6. 关闭对话框
+        dialog.destroy() # 先销毁对话框
+
+        # --- [关键修改] 使用 `after` 延迟执行后续的UI更新 ---
+        # 延迟10毫秒，确保对话框已完全关闭，主窗口事件循环恢复正常
+        self.root.after(10, self._force_refresh_main_view)
+
+    def _force_refresh_main_view(self):
+        """A helper function to refresh all panels after an action."""
+        # 1. 设置当前股票
         if self.watched_stocks:
             self.current_stock = self.watched_stocks[0]
-            items = self.stock_tree.get_children()
-            if items: self.stock_tree.selection_set(items[0])
-        
-        self._update_chart()
-        self._update_account_display()
-        self._update_trade_estimate()
-        dialog.destroy()
+            
+            # 2. 在 Treeview 中选中第一行
+            all_items = self.stock_tree.get_children()
+            if all_items:
+                first_item_iid = all_items[0]
+                self.stock_tree.selection_set(first_item_iid)
+                self.stock_tree.focus(first_item_iid)
+            
+            # 3. 主动调用所有更新函数
+            self._update_chart()
+            self._update_metrics()
+            self._update_account_display()
+            self._update_trade_estimate()
+        else:
+            # 清理
+            self.current_stock = None
+            self.chart_panel.figure.clear()
+            self.chart_panel.canvas.draw()
+            self.stock_info_label.config(text="请选择股票")
 
     def _select_all_stocks(self, dialog):
         """Select all market stocks"""
@@ -652,11 +686,24 @@ class StockTradingGame:
         self._refresh_stock_list()
     
     def _update_chart(self):
-        if not self.current_stock: return
+        """Update chart for current stock"""
+        if not self.current_stock:
+            return
         
+        # --- 核心修改：根据模式决定请求数据的起始点 ---
         end_idx = self.current_date_idx
-        days_before = max(15, config.CHART_WINDOW_DAYS)
-        start_idx = max(0, end_idx - days_before + 1)
+        start_idx = 0
+
+        if self.data_loader.sim_mode:
+            # 模拟模式下，起始点永远是第0天 (Warmup-0001)
+            # 这样图表就能显示完整的预热+当前进度
+            start_idx = 0
+        else:
+            # 历史模式下，只显示最近N天
+            days_before = max(15, config.CHART_WINDOW_DAYS)
+            start_idx = max(0, end_idx - days_before + 1)
+        # -----------------------------------------------
+        
         start_date = self.available_dates[start_idx]
         end_date = self.current_date
         
@@ -664,14 +711,15 @@ class StockTradingGame:
         
         if not data.empty:
             trades = self.account.trade_log.get_trades_for_stock(self.current_stock)
+            
+            # [重要] 传递给图表的数据已经是完整的了
             self.chart_panel.update_chart(data, trades)
             
+            # Update stock info label
             current_data = data[data['date'] == self.current_date]
             if not current_data.empty:
                 row = current_data.iloc[0]
-                pct_val = 0.0
-                if 'pctChg' in row: pct_val = row['pctChg']
-                elif 'pct_chg' in row: pct_val = row['pct_chg']
+                pct_val = row.get('pctChg', row.get('pct_chg', 0.0))
                 info_text = f"{self.current_stock} | 开:{row['open']:.2f} 高:{row['high']:.2f} 低:{row['low']:.2f} 收:{row['close']:.2f} 涨跌:{pct_val:+.2f}%"
                 self.stock_info_label.config(text=info_text)
         
@@ -808,62 +856,126 @@ class StockTradingGame:
         return "break"
 
     def _buy_stock(self):
+        """Execute buy order (Handles both History and Simulation modes)"""
         if not self.current_stock:
             messagebox.showwarning("警告", "请先选择股票")
             return
+        
         try:
             quantity = int(self.quantity_var.get())
-            if quantity <= 0: raise ValueError()
+            if quantity <= 0:
+                raise ValueError()
         except ValueError:
             messagebox.showwarning("警告", "请输入有效的数量")
             return
         
-        next_date = self.data_loader.get_next_date(self.current_date)
-        if not next_date:
-            messagebox.showwarning("警告", "无法获取次日数据")
-            return
-        next_data = self.data_loader.get_stock_data_on_date(self.current_stock, next_date)
-        if not next_data:
-            messagebox.showwarning("警告", "次日数据缺失")
-            return
-        
-        price = next_data['open']
-        success = self.account.buy(next_date, self.current_stock, quantity, price)
+        # --- 核心修改：根据模式决定成交价和成交日期 ---
+        execution_date = None
+        price = 0.0
+
+        if self.data_loader.sim_mode:
+            # --- 模拟模式逻辑 ---
+            # 成交日 = 当日, 成交价 = 当日收盘价
+            current_data = self.data_loader.get_stock_data_on_date(self.current_stock, self.current_date)
+            if not current_data:
+                messagebox.showwarning("警告", "当前日期无数据，无法交易")
+                return
+            
+            price = current_data['close']
+            execution_date = self.current_date
+            
+        else:
+            # --- 历史回测模式逻辑 (原逻辑) ---
+            # 成交日 = 次日, 成交价 = 次日开盘价
+            next_date = self.data_loader.get_next_date(self.current_date)
+            if not next_date:
+                messagebox.showwarning("警告", "当前是最后一个交易日,无法交易")
+                return
+            
+            next_data = self.data_loader.get_stock_data_on_date(self.current_stock, next_date)
+            if not next_data:
+                messagebox.showwarning("警告", f"股票 {self.current_stock} 在次日 {next_date} 无数据（可能停牌）")
+                return
+            
+            price = next_data['open']
+            execution_date = next_date
+        # -----------------------------------------------
+
+        # 执行买入
+        success = self.account.buy(execution_date, self.current_stock, quantity, price)
         
         if success:
-            self.trade_status_label.config(text=f"✓ 买入: {quantity}股 @ {price:.2f}", foreground="green")
+            self.trade_status_label.config(
+                text=f"✓ 买入成功: {quantity}股 @ ¥{price:.2f}",
+                foreground="green"
+            )
             self._update_account_display()
         else:
-            self.trade_status_label.config(text="✗ 资金不足", foreground="red")
+            self.trade_status_label.config(
+                text="✗ 买入失败: 资金不足",
+                foreground="red"
+            )
     
     def _sell_stock(self):
+        """Execute sell order (Handles both History and Simulation modes)"""
         if not self.current_stock:
             messagebox.showwarning("警告", "请先选择股票")
             return
+        
         try:
             quantity = int(self.quantity_var.get())
-            if quantity <= 0: raise ValueError()
+            if quantity <= 0:
+                raise ValueError()
         except ValueError:
             messagebox.showwarning("警告", "请输入有效的数量")
             return
         
-        next_date = self.data_loader.get_next_date(self.current_date)
-        if not next_date:
-            messagebox.showwarning("警告", "无法获取次日数据")
-            return
-        next_data = self.data_loader.get_stock_data_on_date(self.current_stock, next_date)
-        if not next_data:
-            messagebox.showwarning("警告", "次日数据缺失")
-            return
+        # --- 核心修改：根据模式决定成交价和成交日期 ---
+        execution_date = None
+        price = 0.0
+
+        if self.data_loader.sim_mode:
+            # --- 模拟模式逻辑 ---
+            # 成交日 = 当日, 成交价 = 当日收盘价
+            current_data = self.data_loader.get_stock_data_on_date(self.current_stock, self.current_date)
+            if not current_data:
+                messagebox.showwarning("警告", "当前日期无数据，无法交易")
+                return
             
-        price = next_data['open']
-        success = self.account.sell(next_date, self.current_stock, quantity, price)
+            price = current_data['close']
+            execution_date = self.current_date
+
+        else:
+            # --- 历史回测模式逻辑 (原逻辑) ---
+            # 成交日 = 次日, 成交价 = 次日开盘价
+            next_date = self.data_loader.get_next_date(self.current_date)
+            if not next_date:
+                messagebox.showwarning("警告", "当前是最后一个交易日,无法交易")
+                return
+            
+            next_data = self.data_loader.get_stock_data_on_date(self.current_stock, next_date)
+            if not next_data:
+                messagebox.showwarning("警告", f"股票 {self.current_stock} 在次日 {next_date} 无数据（可能停牌）")
+                return
+            
+            price = next_data['open']
+            execution_date = next_date
+        # -----------------------------------------------
+
+        # 执行卖出
+        success = self.account.sell(execution_date, self.current_stock, quantity, price)
         
         if success:
-            self.trade_status_label.config(text=f"✓ 卖出: {quantity}股 @ {price:.2f}", foreground="green")
+            self.trade_status_label.config(
+                text=f"✓ 卖出成功: {quantity}股 @ ¥{price:.2f}",
+                foreground="green"
+            )
             self._update_account_display()
         else:
-            self.trade_status_label.config(text="✗ 持仓不足", foreground="red")
+            self.trade_status_label.config(
+                text="✗ 卖出失败: 持仓不足",
+                foreground="red"
+            )
     
     def _show_performance(self):
         PerformanceWindow(self.root, self.account)

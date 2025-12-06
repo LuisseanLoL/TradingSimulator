@@ -57,3 +57,6 @@ COLOR_GRID = "#f0f0f0"
 # Stock list display
 MAX_STOCK_LIST_DISPLAY = 50
 PINNED_STOCKS_COLOR = "#FFE66D"
+
+# --- 模拟模式配置 ---
+SIM_WARMUP_DAYS = 200 # 为模拟数据增加预热期，确保初始技术指标准确

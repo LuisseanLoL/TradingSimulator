@@ -46,7 +46,11 @@ class DataLoader:
         self.sim_mode = False       # 模式开关
         self.sim_data_cache = {}    # 缓存生成的模拟数据 {code: df}
         self.sim_dates = []         # 模拟模式下的日期列表
-        # ------------------------
+        # --- 新增：模拟模式日期轴 ---
+        self.sim_mode = False
+        self.sim_data_cache = {}
+        self.playable_sim_dates = [] # 仅包含 Sim-Day-xxxx
+        self.full_sim_dates = []     # 包含 Warmup-xxxx 和 Sim-Day-xxxx
 
     def _load_stock_names(self):
         """Load stock names from csv"""
@@ -98,9 +102,13 @@ class DataLoader:
         print(f"DuckDB 就绪: 索引了 {len(self._available_dates)} 个交易日。")
 
     def get_available_dates(self) -> List[str]:
+        """
+        根据当前模式返回可用日期列表。
+        模拟模式下返回包含预热期的完整列表。
+        """
         if self.sim_mode:
-            return self.sim_dates.copy() # 返回模拟日期
-        return self._available_dates.copy() # 返回历史日期
+            return self.full_sim_dates.copy() # [关键修改]
+        return self._available_dates.copy()
     
     def get_daily_snapshot(self, date: str, codes: List[str] = None) -> pd.DataFrame:
         if self.sim_mode:
@@ -166,21 +174,38 @@ class DataLoader:
         return df['code'].tolist()
     
     def get_stock_data(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """Get stock data (supports both History and Sim modes)"""
+        """Get stock data (supports both History and Sim modes with robust slicing)"""
         
         if self.sim_mode:
-            # 模拟模式：从缓存中切片
+            # --- 模拟模式：从缓存中切片 ---
             if code not in self.sim_data_cache:
-                # 如果还没生成，就现场生成 (第一次点击某股票时)
+                # 按需生成 (兜底逻辑)
                 self._generate_single_stock_sim(code)
             
-            df = self.sim_data_cache[code]
-            # 字符串比较日期
-            mask = (df['date'] >= start_date) & (df['date'] <= end_date)
-            return df.loc[mask].copy()
+            df = self.sim_data_cache.get(code)
+            
+            # --- [关键修复] ---
+            # 如果 df 为空或 date 列不存在，直接返回空DF
+            if df is None or df.empty or 'date' not in df.columns:
+                return pd.DataFrame()
+            
+            # 1. 确保 'date' 列是索引，以便进行高效且准确的标签切片
+            df_indexed = df.set_index('date', drop=False)
+            
+            # 2. 使用 .loc 进行切片
+            try:
+                # .loc[start:end] 会包含 start 和 end 两端
+                sliced_df = df_indexed.loc[start_date:end_date]
+                # 恢复索引，保持 DataFrame 结构与其他部分一致
+                return sliced_df.reset_index(drop=True).copy()
+            except KeyError:
+                # 如果 start_date 或 end_date 不在索引中，会抛出 KeyError
+                # 这种情况下返回空 DataFrame 是安全的
+                return pd.DataFrame()
+            # --------------------
             
         else:
-            # 历史模式：查数据库 (原逻辑)
+            # 历史模式：查数据库 (原逻辑不变)
             query = """
                 SELECT * 
                 FROM stock_data 
@@ -211,85 +236,93 @@ class DataLoader:
         """mode: 'history' or 'simulation'"""
         if mode == 'simulation':
             self.sim_mode = True
-            # 生成一套通用的模拟日期轴 (比如 500 天)
-            # 使用伪造日期格式，方便排序
-            self.sim_dates = [f"Sim-Day-{i:04d}" for i in range(1, 1001)] 
-            self.sim_data_cache = {} # 清空缓存
+            # [关键修改] 创建两个日期列表
+            warmup_dates = [f"Warmup-{i:04d}" for i in range(1, config.SIM_WARMUP_DAYS + 1)]
+            self.playable_sim_dates = [f"Sim-Day-{i:04d}" for i in range(1, 1001)] 
+            self.full_sim_dates = warmup_dates + self.playable_sim_dates
+            self.sim_data_cache = {}
         else:
             self.sim_mode = False
             self.sim_data_cache = {}
+            self.full_sim_dates = []
+            self.playable_sim_dates = []
+
+    def ensure_sim_data_generated(self, codes: List[str]):
+        """
+        检查并确保指定的股票代码列表已生成模拟数据并存入缓存。
+        """
+        if not self.sim_mode:
+            return
+        
+        for code in codes:
+            if code not in self.sim_data_cache:
+                self._generate_single_stock_sim(code)
 
     # --- 新增：生成单只股票的蒙特卡洛数据 ---
     def _generate_single_stock_sim(self, code: str):
         """
         核心算法：分块自举 (Block Bootstrapping)
         1. 获取该股票所有历史数据
-        2. 随机切分片段并拼接
+        2. 随机切分片段并拼接 (包含200天预热期)
         3. 平滑价格断层
-        4. 重算指标
+        4. 对完整数据（预热+正式）重算指标
         """
         # 1. 获取所有历史源数据
         query = "SELECT * FROM stock_data WHERE code = ? ORDER BY date ASC"
         src_df = self.con.execute(query, [code]).df()
         
         if src_df.empty or len(src_df) < 100:
-            # 数据太少，没法模拟，生成一个空结构或者报错
             self.sim_data_cache[code] = pd.DataFrame()
             return
 
         # 2. 拼接参数
-        total_days = len(self.sim_dates)
-        chunk_size = 60 # 每个片段 60 天 (约一个季度)
+        total_playable_days = len(self.playable_sim_dates) # [修正] 使用正确的变量名
+        total_days_to_generate = total_playable_days + config.SIM_WARMUP_DAYS
+        chunk_size = 60
         chunks = []
         
         current_len = 0
-        last_close = src_df.iloc[0]['close'] # 初始价格
+        last_close = src_df.iloc[0]['close']
         
         # 3. 循环拼接
-        while current_len < total_days:
-            # 随机选择一个起始点
+        while current_len < total_days_to_generate:
             max_start = len(src_df) - chunk_size - 1
-            if max_start < 0: max_start = 0
-            start_idx = random.randint(0, max_start)
+            if max_start <= 0:
+                start_idx = 0
+                chunk = src_df.copy() if len(src_df) <= chunk_size else src_df.iloc[start_idx : start_idx + chunk_size].copy()
+            else:
+                start_idx = random.randint(0, max_start)
+                chunk = src_df.iloc[start_idx : start_idx + chunk_size].copy()
             
-            # 取出一个切片
-            chunk = src_df.iloc[start_idx : start_idx + chunk_size].copy()
             if chunk.empty: break
             
-            # --- 价格缝合 (Price Stitching) ---
-            # 计算缩放比例：让当前块的开盘价 = 上一块的收盘价
             chunk_open = chunk.iloc[0]['open']
-            if chunk_open == 0: chunk_open = 1.0 # 防除零
-            
+            if chunk_open <= 0: chunk_open = 1.0
             scale = last_close / chunk_open
-            
-            # 调整所有价格字段
             for col in ['open', 'high', 'low', 'close']:
                 chunk[col] = chunk[col] * scale
             
-            # 涨跌幅 pctChg 不需要调整，因为比例缩放后幅度不变
-            # 成交量 vol 保持原样，或者也可以随机缩放，这里保持原样保留量价关系
-            
             chunks.append(chunk)
             current_len += len(chunk)
-            last_close = chunk.iloc[-1]['close'] # 更新锚点价格
+            last_close = chunk.iloc[-1]['close']
         
         # 4. 合并
         sim_df = pd.concat(chunks, ignore_index=True)
-        # 截取所需长度
-        sim_df = sim_df.iloc[:total_days].copy()
+        sim_df = sim_df.iloc[:total_days_to_generate].copy()
         
-        # 5. 覆盖日期
-        sim_df['date'] = self.sim_dates[:len(sim_df)]
+        # 5. [修正] 使用正确的变量名构建完整日期轴
+        warmup_dates = [f"Warmup-{i:04d}" for i in range(1, config.SIM_WARMUP_DAYS + 1)]
+        full_sim_dates = warmup_dates + self.playable_sim_dates
         
-        # 6. 重算技术指标 (关键步骤)
-        # 因为拼接后原本的 MA, MACD 都会断裂，必须重算
+        sim_df['date'] = full_sim_dates[:len(sim_df)]
+        
+        # 6. 重算指标
         sim_df = tech_calc.calculate_technical_factors(sim_df)
         
-        # 存入缓存
+        # 7. 存入缓存
         self.sim_data_cache[code] = sim_df
-        print(f"已生成模拟数据: {code}, 长度 {len(sim_df)}")
-    
+        print(f"已生成模拟数据(含预热): {code}, 总长度 {len(sim_df)}")
+
     def get_random_stocks(self, date: str = None, n: int = 10, prefixes: List[str] = None) -> List[str]:
         """
         Get random n stocks alive on date, optionally filtered by prefixes.
