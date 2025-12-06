@@ -4,9 +4,13 @@ Powered by DuckDB for high-performance zero-copy data access
 """
 import os
 import pandas as pd
+import numpy as np
 import duckdb
 from typing import List, Optional, Dict
 import config
+import random
+# 引入我们刚才写的计算引擎
+import tech_calc 
 
 class DataLoader:
     """
@@ -38,6 +42,11 @@ class DataLoader:
         # --- 新增：加载股票名称 ---
         self.stock_names = {}
         self._load_stock_names()
+        # --- 新增：模拟模式缓存 ---
+        self.sim_mode = False       # 模式开关
+        self.sim_data_cache = {}    # 缓存生成的模拟数据 {code: df}
+        self.sim_dates = []         # 模拟模式下的日期列表
+        # ------------------------
 
     def _load_stock_names(self):
         """Load stock names from csv"""
@@ -89,28 +98,42 @@ class DataLoader:
         print(f"DuckDB 就绪: 索引了 {len(self._available_dates)} 个交易日。")
 
     def get_available_dates(self) -> List[str]:
-        return self._available_dates.copy()
+        if self.sim_mode:
+            return self.sim_dates.copy() # 返回模拟日期
+        return self._available_dates.copy() # 返回历史日期
     
     def get_daily_snapshot(self, date: str, codes: List[str] = None) -> pd.DataFrame:
-        """
-        Get a snapshot of stocks for a specific date.
-        Optimization: If 'codes' is provided, DuckDB only scans relevant data.
-        """
-        # 基础查询
-        base_query = "SELECT * FROM stock_data WHERE strftime(date, '%Y-%m-%d') = ?"
-        params = [date]
-        
-        # 优化：如果提供了代码列表，直接在 SQL 层过滤
-        if codes is not None and len(codes) > 0:
-            # DuckDB 的 Python 客户端可以直接处理列表参数，使用 IN (?) 语法
-            # 但为了兼容性，我们构建一个占位符字符串
-            placeholders = ','.join(['?'] * len(codes))
-            query = f"{base_query} AND code IN ({placeholders})"
-            params.extend(codes)
-        else:
-            query = base_query
+        if self.sim_mode:
+            # 模拟模式下，daily snapshot 比较慢，因为要循环查缓存
+            # 优化：只对 watched_stocks 生成/查询
+            results = []
+            target_codes = codes if codes else []
             
-        return self.con.execute(query, params).df()
+            for c in target_codes:
+                if c not in self.sim_data_cache:
+                    self._generate_single_stock_sim(c)
+                
+                df = self.sim_data_cache[c]
+                row = df[df['date'] == date]
+                if not row.empty:
+                    # 构造 snapshot 需要的字段
+                    r = row.iloc[0]
+                    # 兼容 pct 列名
+                    p = r.get('pctChg', r.get('pct_chg', 0.0))
+                    results.append({'code': c, 'close': r['close'], 'pctChg': p})
+            
+            return pd.DataFrame(results)
+        else:
+            # 历史模式 (原逻辑)
+            base_query = "SELECT * FROM stock_data WHERE strftime(date, '%Y-%m-%d') = ?"
+            params = [date]
+            if codes is not None and len(codes) > 0:
+                placeholders = ','.join(['?'] * len(codes))
+                query = f"{base_query} AND code IN ({placeholders})"
+                params.extend(codes)
+            else:
+                query = base_query
+            return self.con.execute(query, params).df()
 
     def get_date_range(self) -> tuple:
         if not self._available_dates:
@@ -143,41 +166,129 @@ class DataLoader:
         return df['code'].tolist()
     
     def get_stock_data(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        Get historical data for specific stock.
-        DuckDB will only read the Row Groups containing this specific code/date range.
-        """
-        # 确保按日期排序返回
-        query = """
-            SELECT * 
-            FROM stock_data 
-            WHERE code = ? 
-              AND strftime(date, '%Y-%m-%d') >= ? 
-              AND strftime(date, '%Y-%m-%d') <= ?
-            ORDER BY date ASC
-        """
-        df = self.con.execute(query, [code, start_date, end_date]).df()
+        """Get stock data (supports both History and Sim modes)"""
         
-        # DuckDB 返回的 date 是 datetime64[ns]，为了 GUI 显示一致性，
-        # 如果需要 string 格式，可以在这里转，或者在 ChartPanel 里处理。
-        # ChartPanel 目前的代码兼容 datetime 对象。
-        return df
-    
+        if self.sim_mode:
+            # 模拟模式：从缓存中切片
+            if code not in self.sim_data_cache:
+                # 如果还没生成，就现场生成 (第一次点击某股票时)
+                self._generate_single_stock_sim(code)
+            
+            df = self.sim_data_cache[code]
+            # 字符串比较日期
+            mask = (df['date'] >= start_date) & (df['date'] <= end_date)
+            return df.loc[mask].copy()
+            
+        else:
+            # 历史模式：查数据库 (原逻辑)
+            query = """
+                SELECT * 
+                FROM stock_data 
+                WHERE code = ? 
+                  AND strftime(date, '%Y-%m-%d') >= ? 
+                  AND strftime(date, '%Y-%m-%d') <= ?
+                ORDER BY date ASC
+            """
+            return self.con.execute(query, [code, start_date, end_date]).df()
+        
     def get_stock_data_on_date(self, code: str, date: str) -> Optional[Dict]:
-        """Get stock data for specific code on specific date"""
-        query = """
-            SELECT * 
-            FROM stock_data 
-            WHERE code = ? 
-              AND strftime(date, '%Y-%m-%d') = ?
-            LIMIT 1
+        if self.sim_mode:
+            if code not in self.sim_data_cache:
+                self._generate_single_stock_sim(code)
+            df = self.sim_data_cache[code]
+            row = df[df['date'] == date]
+            if row.empty: return None
+            return row.iloc[0].to_dict()
+        else:
+            # 原逻辑
+            query = "SELECT * FROM stock_data WHERE code = ? AND strftime(date, '%Y-%m-%d') = ? LIMIT 1"
+            df = self.con.execute(query, [code, date]).df()
+            if df.empty: return None
+            return df.iloc[0].to_dict()
+    
+    # --- 新增：切换模式 ---
+    def set_mode(self, mode: str):
+        """mode: 'history' or 'simulation'"""
+        if mode == 'simulation':
+            self.sim_mode = True
+            # 生成一套通用的模拟日期轴 (比如 500 天)
+            # 使用伪造日期格式，方便排序
+            self.sim_dates = [f"Sim-Day-{i:04d}" for i in range(1, 1001)] 
+            self.sim_data_cache = {} # 清空缓存
+        else:
+            self.sim_mode = False
+            self.sim_data_cache = {}
+
+    # --- 新增：生成单只股票的蒙特卡洛数据 ---
+    def _generate_single_stock_sim(self, code: str):
         """
-        df = self.con.execute(query, [code, date]).df()
+        核心算法：分块自举 (Block Bootstrapping)
+        1. 获取该股票所有历史数据
+        2. 随机切分片段并拼接
+        3. 平滑价格断层
+        4. 重算指标
+        """
+        # 1. 获取所有历史源数据
+        query = "SELECT * FROM stock_data WHERE code = ? ORDER BY date ASC"
+        src_df = self.con.execute(query, [code]).df()
         
-        if df.empty:
-            return None
+        if src_df.empty or len(src_df) < 100:
+            # 数据太少，没法模拟，生成一个空结构或者报错
+            self.sim_data_cache[code] = pd.DataFrame()
+            return
+
+        # 2. 拼接参数
+        total_days = len(self.sim_dates)
+        chunk_size = 60 # 每个片段 60 天 (约一个季度)
+        chunks = []
         
-        return df.iloc[0].to_dict()
+        current_len = 0
+        last_close = src_df.iloc[0]['close'] # 初始价格
+        
+        # 3. 循环拼接
+        while current_len < total_days:
+            # 随机选择一个起始点
+            max_start = len(src_df) - chunk_size - 1
+            if max_start < 0: max_start = 0
+            start_idx = random.randint(0, max_start)
+            
+            # 取出一个切片
+            chunk = src_df.iloc[start_idx : start_idx + chunk_size].copy()
+            if chunk.empty: break
+            
+            # --- 价格缝合 (Price Stitching) ---
+            # 计算缩放比例：让当前块的开盘价 = 上一块的收盘价
+            chunk_open = chunk.iloc[0]['open']
+            if chunk_open == 0: chunk_open = 1.0 # 防除零
+            
+            scale = last_close / chunk_open
+            
+            # 调整所有价格字段
+            for col in ['open', 'high', 'low', 'close']:
+                chunk[col] = chunk[col] * scale
+            
+            # 涨跌幅 pctChg 不需要调整，因为比例缩放后幅度不变
+            # 成交量 vol 保持原样，或者也可以随机缩放，这里保持原样保留量价关系
+            
+            chunks.append(chunk)
+            current_len += len(chunk)
+            last_close = chunk.iloc[-1]['close'] # 更新锚点价格
+        
+        # 4. 合并
+        sim_df = pd.concat(chunks, ignore_index=True)
+        # 截取所需长度
+        sim_df = sim_df.iloc[:total_days].copy()
+        
+        # 5. 覆盖日期
+        sim_df['date'] = self.sim_dates[:len(sim_df)]
+        
+        # 6. 重算技术指标 (关键步骤)
+        # 因为拼接后原本的 MA, MACD 都会断裂，必须重算
+        sim_df = tech_calc.calculate_technical_factors(sim_df)
+        
+        # 存入缓存
+        self.sim_data_cache[code] = sim_df
+        print(f"已生成模拟数据: {code}, 长度 {len(sim_df)}")
     
     def get_random_stocks(self, date: str, n: int = 10) -> List[str]:
         """Get n random stock codes (excluding indexes)"""
